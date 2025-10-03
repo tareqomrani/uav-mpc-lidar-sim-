@@ -1,11 +1,14 @@
-# app.py — UAV LiDAR + MPC Lab (Full + Playback + Optimized + Dynamic Suggestions)
-# - MPC dynamics, wind/gusts, moving obstacles
-# - LiDAR beams + fused hits + COVERAGE ALONG BEAMS (new)
-# - Battery/RTB, arrival speed & time-to-goal
-# - Loiter at goal (circle) or damped hover (early stop)
-# - Playback mode (step-by-step) + Fast mode + LineCollection beams
-# - Metrics (latency, min separation, speeds) + Dynamic AI Suggestions (new)
-# - Exports: PNG / CSVs / JSON / GeoJSON / ZIP
+# app.py — UAV LiDAR + MPC Lab (Full + Playback + Optimizations)
+# Features:
+# - MPC dynamics (Δt, horizon H) w/ wind & gusts
+# - Moving obstacles (bouncing)
+# - LiDAR ray-casting + fused global hit map + coverage %
+# - Battery model + RTB, arrival speed & time-to-goal
+# - Loiter mode at goal (circle) OR damped hover with early stop
+# - AI Suggestions
+# - Exports: CSV / JSON / PNG / GeoJSON / ZIP
+# - Performance: Fast Mode, decimated plotting, LineCollection beams
+# - Playback: step-by-step animation with delay slider
 
 import streamlit as st
 import numpy as np
@@ -97,10 +100,9 @@ class UAV:
         self._arrived_recorded = False
 
     def lidar_ray_cast(self, obstacles, max_range, n_rays=24):
-        """Return list of beam segments [(a,b), ...] and list of hit points."""
         hits, beams = [], []
         angles = np.linspace(0, 2*np.pi, n_rays, endpoint=False)
-        step = 0.35  # beam marching step (perf/quality trade)
+        step = 0.35  # speed/perf tradeoff
         for ang in angles:
             dvec = np.array([np.cos(ang), np.sin(ang)], float)
             r = 0.0
@@ -129,22 +131,18 @@ class UAV:
         for _ in range(H):
             v = clip_norm(v + a*dt, self.max_speed)
             p = p + (v + wind) * dt
-            # goal tracking
-            cost += np.linalg.norm(p - self.goal)**2
-            # obstacles
-            for ob in obstacles:
+            cost += np.linalg.norm(p - self.goal)**2  # goal tracking
+            for ob in obstacles:                     # obstacle penalty
                 outside = np.maximum(np.abs(p - ob.p) - ob.size/2, 0.0)
                 dist = np.linalg.norm(outside)
-                if dist < 0.5:        cost += 400.0
+                if dist < 0.5:      cost += 400.0
                 elif dist < lidar_radius: cost += 2.0 / (dist + 1e-3)
-            # inter-drone separation
-            for od in others:
+            for od in others:                       # separation
                 if od.id == self.id: continue
                 d = np.linalg.norm(p - od.p)
-                if d < 0.8:        cost += 400.0
-                elif d < 2.5:      cost += 7.0 / (d + 1e-3)
-        # control effort
-        cost += 0.1 * np.dot(a, a)
+                if d < 0.8:      cost += 400.0
+                elif d < 2.5:    cost += 7.0 / (d + 1e-3)
+        cost += 0.1 * np.dot(a, a)                  # effort
         return cost
 
     def mpc_step(self, drones, obstacles, H=3, lidar_radius=6.0, damping=0.6, wind=np.zeros(2),
@@ -387,32 +385,16 @@ for t in range(steps):
     for d in drones:
         beams, hits = d.lidar_ray_cast(obstacles, max_range=lidar_radius, n_rays=lidar_rays)
         d._last_beams, d._last_hits = beams, hits
-
-        # NEW: mark coverage ALONG EVERY BEAM (not just obstacle hits)
-        for a, b in beams:
-            seg = np.array(b) - np.array(a)
-            seg_len = float(np.linalg.norm(seg))
-            if seg_len < 1e-9:
-                pts = [np.array(a)]
-            else:
-                step_len = max(coverage_cell * 0.5, 0.3)
-                nsteps = int(np.ceil(seg_len / step_len))
-                tvals = np.linspace(0.0, 1.0, nsteps + 1)
-                pts = [np.array(a) + t_ * seg for t_ in tvals]
-            for pnt in pts:
-                xh, yh = float(pnt[0]), float(pnt[1])
-                if 0.0 <= xh <= grid_size and 0.0 <= yh <= grid_size:
-                    cx = int(np.clip(xh // coverage_cell, 0, cols - 1))
-                    cy = int(np.clip(yh // coverage_cell, 0, rows - 1))
-                    covered.add((cx, cy))
-
-        # keep fused map of obstacle hits (for viz/export)
         for h in hits:
-            fused_points.append((float(h[0]), float(h[1]), t, sim_time))
+            xh, yh = float(h[0]), float(h[1])
+            fused_points.append((xh, yh, t, sim_time))
+            cx = int(np.clip(xh // coverage_cell, 0, cols - 1))
+            cy = int(np.clip(yh // coverage_cell, 0, rows - 1))
+            covered.add((cx, cy))
 
     # MPC + dynamics (with latency profiling)
     for d in drones:
-        d._global_time = sim_time  # for arrival capture
+        d._global_time = sim_time  # provide current time to UAV for arrival capture
         t0 = time.perf_counter()
         d.mpc_step(drones, obstacles, H=horizon, lidar_radius=lidar_radius,
                    damping=damping, wind=wind,
@@ -473,7 +455,7 @@ st.write(f"**Coverage:** {coverage_pct:.1f}%  (cell={coverage_cell:.2f} u)")
 if ms is not None:
     st.write(f"**Min separation (pairwise):** {ms:.2f} u")
 
-# Per-drone summary
+# per-drone summary lines
 metrics_list = []
 for d in drones:
     final_dist = float(np.linalg.norm(d.p - d.goal))
@@ -499,56 +481,48 @@ for d in drones:
     })
 
 # ------------------------------
-# 🤖 AI Suggestions (dynamic)
+# 🤖 AI Suggestions (clean strings)
 # ------------------------------
 st.subheader("🤖 AI Suggestions")
 sugs = []
 
-# Coverage bands
-if   coverage_pct < 30:
-    sugs.append("Coverage is very low (<30%). Increase LiDAR range/rays, add drones, or shrink world size.")
-elif coverage_pct < 60:
-    sugs.append("Coverage is moderate (30–60%). Consider more rays or a smaller cell size for finer mapping.")
+# Coverage
+if coverage_pct < 50:
+    sugs.append("Coverage is low (<50%). Increase LiDAR range, add more drones, or reduce obstacle density.")
 elif coverage_pct > 90:
-    sugs.append("Coverage is very high (>90%). You can reduce rays/range or drone count to save compute.")
+    sugs.append("Coverage is very high (>90%). You may reduce LiDAR rays or drone count to save computation.")
 
-# Latency bands relative to workload (H × rays)
+# Latency
 if not lat_df.empty:
-    avg_ms = float(lat_df["latency_s"].mean() * 1000.0)
-    expected_ms = 6.0 + 0.15 * horizon * lidar_rays  # rough target curve
-    if avg_ms > max(200.0, 1.5 * expected_ms):
-        sugs.append("MPC latency is high. Reduce horizon or LiDAR rays, or enable Fast mode.")
-    elif avg_ms < 0.5 * expected_ms:
-        sugs.append("MPC latency is very low. Consider longer horizon or more rays for richer behavior.")
+    avg_lat_s = float(lat_df["latency_s"].mean())
+    if avg_lat_s > 0.2:
+        sugs.append("High MPC latency (>200 ms). Reduce horizon length or LiDAR rays for faster response.")
+    elif avg_lat_s < 0.05:
+        sugs.append("MPC latency is very low (<50 ms). Consider increasing horizon or sensor fidelity for richer behavior.")
 
-# Separation scaled to map size
-if ms is not None:
-    if ms < max(0.8, 0.02 * grid_size):
-        sugs.append("Collision risk: minimum separation is tight. Increase avoidance penalties or slow max speed.")
-    elif ms > 0.20 * grid_size:
-        sugs.append("Fleet is widely dispersed. Tighten formation goals or reduce world size.")
+# Separation
+if ms is not None and ms < 1.0:
+    sugs.append("Collision risk (min separation < 1 u). Increase avoidance radius or raise penalty weight.")
+elif ms is not None and ms > 5.0:
+    sugs.append("Drones are very spread out (> 5 u). Consider tightening formation or lowering separation weights.")
 
-# Battery – one tip only
-avg_batt = np.mean([100.0 * d.energy_Wh / max(1e-9, d.energy_Wh_init) for d in drones])
-if avg_batt < 25:
-    sugs.append("Batteries are low on average (<25%). Reduce mission time or increase initial energy.")
-elif avg_batt > 80 and sim_time < steps * dt * 0.75:
-    sugs.append("Batteries are largely unused (>80%). Extend flight time, add tasks, or reduce initial energy.")
+# Battery
+low_batts = [m for m in metrics_list if m["battery_pct"] < 20.0]
+if len(low_batts) > 0:
+    sugs.append("One or more drones are below 20% battery. Trigger RTB or reduce mission duration.")
+elif len(metrics_list) > 0 and all(m["battery_pct"] > 80.0 for m in metrics_list):
+    sugs.append("All drones finished above 80% battery. Endurance is under-utilized—extend flight time or reduce battery size.")
 
-# Speed utilization (avg & peak)
-avg_speeds = [float(np.mean(d.speed_hist)) for d in drones]
-peak_speeds = [float(np.max(d.speed_hist)) for d in drones]
-if np.mean(avg_speeds) < 0.2 * max_speed and np.mean(peak_speeds) < 0.5 * max_speed:
-    sugs.append("Speeds are low. Increase max speed/accel or reduce damping/loiter radius.")
-elif np.mean(avg_speeds) > 0.8 * max_speed:
-    sugs.append("Drones are speed-saturated. Lower penalties or raise max speed cautiously.")
+# Speed utilization
+if any(m["avg_speed"] < 0.2 for m in metrics_list):
+    sugs.append("Average drone speed is very low (< 0.2 u/s). Increase max speed or acceleration for more agile motion.")
+elif any(m["avg_speed"] > 0.9 * max_speed for m in metrics_list):
+    sugs.append("Average speed is near the configured max. Consider raising max speed or lowering penalties to reduce saturation.")
 
-# Show unique suggestions only
-shown = set()
+# Display
 if sugs:
     for s in sugs:
-        if s not in shown:
-            st.write("- " + s); shown.add(s)
+        st.write("- " + s)
 else:
     st.write("No critical suggestions — parameters look balanced.")
 
