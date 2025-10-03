@@ -1,22 +1,20 @@
-# app.py — Multi-Agent LiDAR + MPC with Loiter Mode (Complete)
+# app.py — UAV LiDAR + MPC Lab (Full + Playback + Optimizations)
 # Features:
-# - MPC dynamics (Δt, horizon H)
-# - Wind & gusts
+# - MPC dynamics (Δt, horizon H) w/ wind & gusts
 # - Moving obstacles (bouncing)
-# - LiDAR ray-casting + fused global hit map
-# - Coverage grid (% area seen)
-# - Battery/RTB energy model
-# - Greedy task allocation
-# - Scenario presets
-# - Metrics: arrival speed, time-to-goal, avg/peak speed, battery, latency, min separation
-# - AI Suggestions (clean strings)
-# - Exports: CSV/JSON/PNG/GeoJSON + ZIP
-# - Loiter mode at goal (circle) OR damped hover with early-stop
+# - LiDAR ray-casting + fused global hit map + coverage %
+# - Battery model + RTB, arrival speed & time-to-goal
+# - Loiter mode at goal (circle) OR damped hover with early stop
+# - AI Suggestions
+# - Exports: CSV / JSON / PNG / GeoJSON / ZIP
+# - Performance: Fast Mode, decimated plotting, LineCollection beams
+# - Playback: step-by-step animation with delay slider
 
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from matplotlib.collections import LineCollection
 import pandas as pd
 import time, io, json, zipfile
 from datetime import datetime
@@ -104,20 +102,19 @@ class UAV:
     def lidar_ray_cast(self, obstacles, max_range, n_rays=24):
         hits, beams = [], []
         angles = np.linspace(0, 2*np.pi, n_rays, endpoint=False)
+        step = 0.35  # speed/perf tradeoff
         for ang in angles:
             dvec = np.array([np.cos(ang), np.sin(ang)], float)
-            r, step = 0.0, 0.25
+            r = 0.0
             hit_point = None
             while r < max_range:
                 sample = self.p + dvec * r
-                collided = False
                 for ob in obstacles:
                     half = ob.size/2
                     if (abs(sample[0]-ob.p[0]) <= half) and (abs(sample[1]-ob.p[1]) <= half):
-                        collided = True
                         hit_point = sample.copy()
                         break
-                if collided:
+                if hit_point is not None:
                     break
                 r += step
             end = self.p + dvec * min(r, max_range)
@@ -134,31 +131,23 @@ class UAV:
         for _ in range(H):
             v = clip_norm(v + a*dt, self.max_speed)
             p = p + (v + wind) * dt
-            # goal tracking
-            cost += np.linalg.norm(p - self.goal)**2
-            # obstacles
-            for ob in obstacles:
+            cost += np.linalg.norm(p - self.goal)**2  # goal tracking
+            for ob in obstacles:                     # obstacle penalty
                 outside = np.maximum(np.abs(p - ob.p) - ob.size/2, 0.0)
                 dist = np.linalg.norm(outside)
-                if dist < 0.5:
-                    cost += 400.0
-                elif dist < lidar_radius:
-                    cost += 2.0 / (dist + 1e-3)
-            # drones
-            for od in others:
-                if od.id == self.id:
-                    continue
+                if dist < 0.5:      cost += 400.0
+                elif dist < lidar_radius: cost += 2.0 / (dist + 1e-3)
+            for od in others:                       # separation
+                if od.id == self.id: continue
                 d = np.linalg.norm(p - od.p)
-                if d < 0.8:
-                    cost += 400.0
-                elif d < 2.5:
-                    cost += 7.0 / (d + 1e-3)
-        # effort
-        cost += 0.1 * np.dot(a, a)
+                if d < 0.8:      cost += 400.0
+                elif d < 2.5:    cost += 7.0 / (d + 1e-3)
+        cost += 0.1 * np.dot(a, a)                  # effort
         return cost
 
     def mpc_step(self, drones, obstacles, H=3, lidar_radius=6.0, damping=0.6, wind=np.zeros(2),
                  loiter=False, loiter_speed=0.6, loiter_radius=1.5):
+
         # RTB trigger at 15% of initial energy
         if (not self.rtb) and self.energy_Wh <= 0.15 * self.energy_Wh_init:
             self.rtb = True
@@ -213,9 +202,9 @@ class UAV:
     def _log_state(self):
         self.path.append(tuple(self.p))
         self.vel_hist.append(tuple(self.v))
-        self.speed_hist.append(float(np.linalg.norm(self.v)))
-        # simple power model: hover overhead + speed^3
-        power_W = 20.0 + 8.0 * (np.linalg.norm(self.v) ** 3)
+        sp = float(np.linalg.norm(self.v))
+        self.speed_hist.append(sp)
+        power_W = 20.0 + 8.0 * (sp ** 3)  # simple power model
         self.energy_Wh = max(0.0, self.energy_Wh - power_W * self.dt / 3600.0)
 
     def set_energy_init(self):
@@ -224,12 +213,20 @@ class UAV:
 # ------------------------------
 # Streamlit UI
 # ------------------------------
-st.set_page_config(page_title="Multi-Agent LiDAR + MPC — Loiter Mode", layout="wide")
-st.title("🛰️ Multi-Agent UAV LiDAR + MPC — Loiter Mode")
+st.set_page_config(page_title="UAV LiDAR + MPC Lab", layout="wide")
+st.title("🛰️ UAV LiDAR + MPC Lab")
 
 # Presets
 preset = st.sidebar.selectbox("Scenario preset", ["None", "Warehouse Scan", "Urban Canyon", "Disaster Mapping"])
 st.sidebar.write("---")
+
+# Performance
+fast_mode = st.sidebar.checkbox("Fast mode (optimize plotting)", True)
+max_hit_points = st.sidebar.slider("Max plotted LiDAR hits", 1000, 20000, 6000, 500)
+
+# Playback
+playback = st.sidebar.checkbox("Enable Playback (step-by-step)", False)
+play_delay = st.sidebar.slider("Playback delay per frame (s)", 0.01, 0.5, 0.08, 0.01)
 
 # Controls
 grid_size = st.sidebar.slider("World Size", 20, 100, 40)
@@ -315,7 +312,7 @@ for i in range(num_drones):
     u.set_energy_init()
     drones.append(u)
 
-# Coverage grid
+# Coverage grid setup
 cols = int(np.ceil(grid_size / coverage_cell))
 rows = int(np.ceil(grid_size / coverage_cell))
 covered = set()
@@ -325,9 +322,61 @@ fused_points = []     # (x, y, step, time)
 traj_rows = []        # state time series
 mpc_times = []        # per-drone per-step latency
 sim_time = 0.0
+post_arrival_grace = 5  # steps of loiter after all arrived (for playback)
+
+# Plot container for playback
+frame_container = st.empty()
+
+def render_frame():
+    """Draw current frame using fast-mode decimation and batched beams."""
+    fig, ax = plt.subplots(figsize=(8.2, 8.2))
+    ax.set_xlim(0, grid_size); ax.set_ylim(0, grid_size)
+    ax.set_title("LiDAR + MPC — Loiter / Hover")
+
+    # Fused hits (decimated)
+    if len(fused_points) > 0:
+        if fast_mode and len(fused_points) > max_hit_points:
+            idx = np.random.choice(len(fused_points), size=max_hit_points, replace=False)
+            fp = np.array([fused_points[i] for i in idx])
+        else:
+            fp = np.array(fused_points)
+        ax.scatter(fp[:, 0], fp[:, 1], s=(3 if fast_mode else 6),
+                   alpha=(0.18 if fast_mode else 0.22), marker='.', label="Fused LiDAR hits")
+
+    # Obstacles
+    for ob in obstacles:
+        ax.add_patch(patches.Rectangle((ob.p[0] - ob.size/2, ob.p[1] - ob.size/2),
+                                       ob.size, ob.size, color="black"))
+
+    # Batched beams (faster)
+    if show_beams and any(hasattr(d, "_last_beams") for d in drones):
+        segments, colors = [], []
+        for d in drones:
+            if hasattr(d, "_last_beams"):
+                for a, b in d._last_beams:
+                    segments.append([(a[0], a[1]), (b[0], b[1])])
+                    colors.append(d.color)
+        if segments:
+            lc = LineCollection(segments, linewidths=0.6, alpha=0.22, colors=colors)
+            ax.add_collection(lc)
+
+    # Drones & paths
+    for d in drones:
+        xs, ys = zip(*d.path)
+        if fast_mode and len(xs) > 400:
+            step_dec = max(1, len(xs) // 400)
+            xs = xs[::step_dec]; ys = ys[::step_dec]
+        ax.plot(xs, ys, linestyle="--", color=d.color, alpha=0.9)
+        ax.scatter(d.p[0], d.p[1], color=d.color, s=90, marker="o", label=f"Drone {d.id}")
+        ax.scatter(d.goal[0], d.goal[1], color=d.color, marker="*", s=180, edgecolor="k")
+        circ = patches.Circle((d.goal[0], d.goal[1]), d.goal_radius, fill=False, linestyle=":", alpha=0.6)
+        ax.add_patch(circ)
+
+    ax.legend(loc="upper right")
+    return fig
 
 # ------------------------------
-# Simulation loop
+# Simulation loop (supports playback)
 # ------------------------------
 for t in range(steps):
     wind = np.array([wx, wy]) + np.random.normal(0, gust, size=2)
@@ -345,13 +394,11 @@ for t in range(steps):
 
     # MPC + dynamics (with latency profiling)
     for d in drones:
-        d._global_time = sim_time  # used to capture time-to-goal
+        d._global_time = sim_time  # provide current time to UAV for arrival capture
         t0 = time.perf_counter()
-        d.mpc_step(
-            drones, obstacles, H=horizon, lidar_radius=lidar_radius,
-            damping=damping, wind=wind,
-            loiter=loiter_enabled, loiter_speed=loiter_speed, loiter_radius=loiter_radius
-        )
+        d.mpc_step(drones, obstacles, H=horizon, lidar_radius=lidar_radius,
+                   damping=damping, wind=wind,
+                   loiter=loiter_enabled, loiter_speed=loiter_speed, loiter_radius=loiter_radius)
         t1 = time.perf_counter()
         mpc_times.append({"step": t, "drone_id": d.id, "latency_s": t1 - t0})
 
@@ -363,49 +410,32 @@ for t in range(steps):
             "speed": d.speed_hist[-1], "energy_Wh": d.energy_Wh, "rtb": d.rtb
         })
 
-    # Move obstacles & advance time
+    # Move obstacles
     for ob in obstacles:
         ob.step(dt, grid_size)
+
     sim_time += dt
 
-    # Early stop only when not loitering
-    if not loiter_enabled and all(dr.at_goal for dr in drones):
-        break
+    # Early stop behavior
+    if all(dr.at_goal for dr in drones):
+        if not playback and not loiter_enabled:
+            break  # normal early stop
+        # playback or loiter enabled: brief grace window then stop
+        post_arrival_grace -= 1
+        if post_arrival_grace <= 0:
+            break
+
+    # Playback rendering
+    if playback:
+        fig = render_frame()
+        frame_container.pyplot(fig)
+        time.sleep(play_delay)
 
 coverage_pct = 100.0 * len(covered) / max(1, rows * cols)
 
-# ------------------------------
-# Plot
-# ------------------------------
-fig, ax = plt.subplots(figsize=(8.6, 8.6))
-ax.set_xlim(0, grid_size)
-ax.set_ylim(0, grid_size)
-ax.set_title("LiDAR + MPC — Loiter / Hover")
-
-# Fused hits
-if len(fused_points) > 0:
-    fp = np.array(fused_points)
-    ax.scatter(fp[:, 0], fp[:, 1], s=6, alpha=0.22, marker='.', label="Fused LiDAR hits")
-
-# Obstacles
-for ob in obstacles:
-    ax.add_patch(patches.Rectangle((ob.p[0] - ob.size/2, ob.p[1] - ob.size/2),
-                                   ob.size, ob.size, color="black"))
-
-# Drones & beams
-for d in drones:
-    xs, ys = zip(*d.path)
-    ax.plot(xs, ys, linestyle="--", color=d.color, alpha=0.9)
-    ax.scatter(d.p[0], d.p[1], color=d.color, s=90, marker="o", label=f"Drone {d.id}")
-    ax.scatter(d.goal[0], d.goal[1], color=d.color, marker="*", s=180, edgecolor="k")
-    circ = patches.Circle((d.goal[0], d.goal[1]), d.goal_radius, fill=False, linestyle=":", alpha=0.6)
-    ax.add_patch(circ)
-    if show_beams and hasattr(d, "_last_beams"):
-        for a, b in d._last_beams:
-            ax.plot([a[0], b[0]], [a[1], b[1]], color=d.color, alpha=0.25, linewidth=0.8)
-
-ax.legend(loc="upper right")
-st.pyplot(fig)
+# Final still (ensures one figure even if playback already showed frames)
+final_fig = render_frame()
+st.pyplot(final_fig)
 
 # ------------------------------
 # Metrics
@@ -451,7 +481,7 @@ for d in drones:
     })
 
 # ------------------------------
-# 🤖 AI Suggestions (clean)
+# 🤖 AI Suggestions (clean strings)
 # ------------------------------
 st.subheader("🤖 AI Suggestions")
 sugs = []
@@ -517,7 +547,6 @@ metrics_df = pd.DataFrame([{
 fused_df = pd.DataFrame(fused_points, columns=["x", "y", "step", "time_s"]) if len(fused_points) > 0 \
            else pd.DataFrame(columns=["x", "y", "step", "time_s"])
 
-# Full run summary
 run_summary = {
     "timestamp": datetime.utcnow().isoformat() + "Z",
     "preset": preset,
@@ -541,7 +570,7 @@ run_summary = {
 
 # Individual downloads
 png_buf = io.BytesIO()
-fig.savefig(png_buf, format="png", dpi=180, bbox_inches="tight")
+final_fig.savefig(png_buf, format="png", dpi=(120 if fast_mode else 180), bbox_inches="tight")
 st.download_button("🖼️ Plot (PNG)", png_buf.getvalue(), "plot.png", "image/png")
 st.download_button("📄 Trajectories (CSV)", traj_df.to_csv(index=False).encode("utf-8"),
                    "trajectories.csv", "text/csv")
