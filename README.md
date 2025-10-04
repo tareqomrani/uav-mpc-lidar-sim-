@@ -7,8 +7,7 @@ A lightweight, interactive multi-agent UAV simulator that blends LiDAR sensing w
 ⸻
 
 ✨ Highlights
-
-	•	Multi-drone 2-D world with bouncing moving obstacles
+•	Multi-drone 2-D world with bouncing moving obstacles
 	•	LiDAR ray-casting with coverage along beams (not just hits)
 	•	MPC navigation with separation penalties and wind/gusts
 	•	Goal behaviors: damped hover or circular Loiter Mode
@@ -21,8 +20,7 @@ A lightweight, interactive multi-agent UAV simulator that blends LiDAR sensing w
 ⸻
 
 🧩 Features at a Glance
-
-	•	Scenarios (presets): Warehouse Scan · Urban Canyon · Disaster Mapping
+•	Scenarios (presets): Warehouse Scan · Urban Canyon · Disaster Mapping
 	•	LiDAR: configurable range & rays; fused map of hits; coverage grid %
 	•	Wind & Gusts: constant vector plus zero-mean Gaussian gusts
 	•	Energy/RTB: simple power model; automatic Return-To-Base when low
@@ -30,8 +28,7 @@ A lightweight, interactive multi-agent UAV simulator that blends LiDAR sensing w
 	•	Safety: minimum inter-drone separation metric
 	•	Metrics: latency (avg/p95/max), speeds (avg/peak/now), battery %, final distance
 🕹️ Using the App
-
-	•	Open the sidebar to configure the world (size, steps, Δt), MPC (horizon, speed/accel), LiDAR (range & rays), wind/gusts, drones/obstacles, energy, coverage cell size, and RNG seed.
+•	Open the sidebar to configure the world (size, steps, Δt), MPC (horizon, speed/accel), LiDAR (range & rays), wind/gusts, drones/obstacles, energy, coverage cell size, and RNG seed.
 	•	Choose Hover (damped) or Loiter (circle) at goals.
 	•	Toggle Playback to watch the simulation step-by-step; adjust the delay slider for speed.
 Disable Playback for a faster, compute-only run with a final snapshot.
@@ -46,8 +43,7 @@ Key Toggles
 ⸻
 
 📊 Metrics & Suggestions
-
-	•	Arrival: records time-to-goal and speed at the instant the goal is first reached.
+•	Arrival: records time-to-goal and speed at the instant the goal is first reached.
 	•	Coverage: computed by tracing each beam across the grid (so range/rays/cell size matter).
 	•	Latency: per-drone MPC timing (avg / p95 / max).
 	•	AI Suggestions (dynamic):
@@ -80,8 +76,7 @@ Buttons at the bottom let you download:
 ⸻
 
 🐢 Performance Tips
-
-	•	Turn on Fast Mode (recommended on mobile).
+•	Turn on Fast Mode (recommended on mobile).
 	•	Lower LiDAR rays or disable Show Beams.
 	•	Reduce World Size and/or Steps during tuning.
 	•	PNG export uses lower DPI in Fast Mode to speed up downloads.
@@ -89,12 +84,10 @@ Buttons at the bottom let you download:
 ⸻
 
 🧪 Reproducibility
-
-	•	Use the Random seed control to make runs repeatable.
+•	Use the Random seed control to make runs repeatable.
 	•	Scenario presets tweak obstacle counts/sizes/speeds for representative environments.
 ❓ Troubleshooting
-
-	•	Slow rendering: enable Fast Mode, hide beams, reduce LiDAR rays and Steps.
+•	Slow rendering: enable Fast Mode, hide beams, reduce LiDAR rays and Steps.
 	•	No movement / stuck drones: raise max_speed/max_accel or lower goal_radius / obstacle density.
 	•	Coverage always low: increase Range/Rays, decrease Cell size, or shrink World size.
 	•	Latency tip always “very low”: intentionally increase Horizon or Rays to exercise the planner.
