@@ -1,4 +1,4 @@
-✈️ UAV LiDAR + MPC Lab
+![banner](banner.PNG)
 
 A lightweight, interactive multi-agent UAV simulator that blends LiDAR sensing with Model Predictive Control (MPC) for real-time obstacle avoidance, tasking, and coordination. Runs in a browser via Streamlit.
 
